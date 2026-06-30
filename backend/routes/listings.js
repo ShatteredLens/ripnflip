@@ -176,4 +176,26 @@ router.get('/usage', requireAuth, async (req, res) => {
   }
 });
 
+// ── DELETE A LISTING ──
+router.delete('/:id', requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Scoped to user_id so a user can only ever delete their own cards, never anyone else's
+    const { rows } = await pool.query(
+      `DELETE FROM listings WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [id, req.userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Card not found in your collection.' });
+    }
+
+    res.json({ deleted: true, id: rows[0].id });
+  } catch (err) {
+    console.error('Delete listing error:', err);
+    res.status(500).json({ error: 'Could not delete this card. Please try again.' });
+  }
+});
+
 module.exports = router;
