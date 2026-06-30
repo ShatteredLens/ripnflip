@@ -22,7 +22,7 @@ router.post(
       return res.status(400).json({ error: 'Both front and back images are required.' });
     }
 
-    const { seriesId, isMint, isGraded } = req.body;
+    const { seriesId, condition, isGraded } = req.body;
 
     try {
       let seriesName = null;
@@ -42,7 +42,7 @@ router.post(
         backBase64: back.buffer.toString('base64'),
         backMediaType: back.mimetype,
         options: {
-          isMint: isMint === 'true',
+          condition: condition || 'Mint / Unplayed / Sleeved',
           isGraded: isGraded === 'true',
           seriesName,
           seriesPricingNotes,
@@ -92,22 +92,69 @@ router.post(
   }
 );
 
-// ── GET LISTING HISTORY ──
+// ── GET LISTING HISTORY (filterable, sortable) ──
 router.get('/history', requireAuth, async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
   const offset = parseInt(req.query.offset) || 0;
+  const { series, character, sort } = req.query;
+
+  // Whitelist sort options to avoid SQL injection via ORDER BY
+  const sortMap = {
+    newest: 'created_at DESC',
+    oldest: 'created_at ASC',
+    character_az: 'character_name ASC',
+    character_za: 'character_name DESC',
+    series_az: 'series_name ASC',
+    price_high: 'price_max_cents DESC NULLS LAST',
+    price_low: 'price_min_cents ASC NULLS LAST',
+  };
+  const orderBy = sortMap[sort] || sortMap.newest;
+
+  const conditions = ['user_id = $1'];
+  const params = [req.userId];
+  let paramIndex = 2;
+
+  if (series) {
+    conditions.push(`series_name ILIKE $${paramIndex}`);
+    params.push(`%${series}%`);
+    paramIndex++;
+  }
+  if (character) {
+    conditions.push(`character_name ILIKE $${paramIndex}`);
+    params.push(`%${character}%`);
+    paramIndex++;
+  }
+
+  params.push(limit, offset);
 
   try {
     const { rows } = await pool.query(
-      `SELECT id, character_name, series_name, card_number, rarity, is_graded, grade,
-              price_min_cents, price_max_cents, ebay_title, created_at
+      `SELECT id, character_name, series_name, card_number, set_name, rarity, finish,
+              is_graded, grading_company, grade, cert_number, sub_scores, condition,
+              price_min_cents, price_max_cents, pricing_notes, pricing_confidence,
+              ebay_title, ebay_description, front_image_url, back_image_url, created_at
        FROM listings
-       WHERE user_id = $1
-       ORDER BY created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [req.userId, limit, offset]
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY ${orderBy}
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      params
     );
-    res.json({ listings: rows });
+
+    // Also return the distinct series/character lists so the frontend can build filter dropdowns
+    const { rows: seriesRows } = await pool.query(
+      `SELECT DISTINCT series_name FROM listings WHERE user_id = $1 AND series_name IS NOT NULL ORDER BY series_name ASC`,
+      [req.userId]
+    );
+    const { rows: characterRows } = await pool.query(
+      `SELECT DISTINCT character_name FROM listings WHERE user_id = $1 AND character_name IS NOT NULL ORDER BY character_name ASC`,
+      [req.userId]
+    );
+
+    res.json({
+      listings: rows,
+      availableSeries: seriesRows.map(r => r.series_name),
+      availableCharacters: characterRows.map(r => r.character_name),
+    });
   } catch (err) {
     console.error('History fetch error:', err);
     res.status(500).json({ error: 'Could not load listing history.' });
