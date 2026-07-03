@@ -10,13 +10,18 @@ const app = express();
 
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
 
-// Stripe webhook route handles its own raw-body parsing internally (see routes/billing.js),
-// so it must be reachable before the global express.json() below.
+// Parse JSON for all routes. The Stripe webhook endpoint overrides this with
+// express.raw() inside billing.js using a router-level middleware, which takes
+// precedence over this global parser for that specific path.
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/billing/webhook') {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 app.use('/api/billing', billingRoutes);
-
-// Everything else uses normal JSON parsing
-app.use(express.json());
-
 app.use('/api/auth', authRoutes);
 app.use('/api/listings', listingsRoutes);
 
