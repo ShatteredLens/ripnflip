@@ -43,8 +43,8 @@ router.post('/checkout/subscription', requireAuth, async (req, res) => {
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.FRONTEND_URL}/account?checkout=success`,
-      cancel_url: `${process.env.FRONTEND_URL}/pricing?checkout=canceled`,
+      success_url: `${process.env.FRONTEND_URL}/?checkout=success`,
+      cancel_url: `${process.env.FRONTEND_URL}/?checkout=canceled`,
       metadata: { userId: req.userId, plan },
     });
 
@@ -79,8 +79,8 @@ router.post('/checkout/credits', requireAuth, async (req, res) => {
       customer: customerId,
       mode: 'payment',
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.FRONTEND_URL}/account?purchase=success`,
-      cancel_url: `${process.env.FRONTEND_URL}/pricing?purchase=canceled`,
+      success_url: `${process.env.FRONTEND_URL}/?purchase=success`,
+      cancel_url: `${process.env.FRONTEND_URL}/?purchase=canceled`,
       metadata: { userId: req.userId, credits: String(credits) },
     });
 
@@ -101,7 +101,7 @@ router.post('/portal', requireAuth, async (req, res) => {
 
     const session = await stripe.billingPortal.sessions.create({
       customer: rows[0].stripe_customer_id,
-      return_url: `${process.env.FRONTEND_URL}/account`,
+      return_url: `${process.env.FRONTEND_URL}/`,
     });
 
     res.json({ url: session.url });
@@ -110,7 +110,7 @@ router.post('/portal', requireAuth, async (req, res) => {
   }
 });
 
-// ── WEBHOOK (raw body required — mounted before express.json() in server.js) ──
+// ── WEBHOOK (raw body required) ──
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   let event;
 
@@ -121,7 +121,6 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Idempotency check — Stripe can deliver the same event more than once
   const alreadyProcessed = await pool.query('SELECT id FROM stripe_events WHERE id = $1', [event.id]);
   if (alreadyProcessed.rows.length > 0) {
     return res.json({ received: true, duplicate: true });
