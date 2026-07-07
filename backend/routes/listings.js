@@ -100,6 +100,116 @@ router.post(
   }
 );
 
+// ── RE-PRICE A LISTING WITH CORRECTED RARITY ──
+// Called when a user corrects the rarity of a low-confidence card in My Collection.
+// Does not count against usage limits since the original scan already consumed a credit.
+router.post('/:id/reprice', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { correctedRarity } = req.body;
+
+  if (!correctedRarity) {
+    return res.status(400).json({ error: 'Corrected rarity is required.' });
+  }
+
+  try {
+    // Fetch the existing listing to get all context needed for re-pricing
+    const { rows } = await pool.query(
+      `SELECT * FROM listings WHERE id = $1 AND user_id = $2`,
+      [id, req.userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Card not found in your collection.' });
+    }
+
+    const listing = rows[0];
+
+    // Build a targeted re-price prompt using the corrected rarity
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const repricePrompt = `You are RipNFlip's pricing engine. A collector has corrected the rarity of a previously scanned card.
+
+Card details:
+- Character: ${listing.character_name}
+- Series: ${listing.series_name}
+- Set: ${listing.set_name}
+- Card Number: ${listing.card_number}
+- Corrected Rarity: ${correctedRarity}
+- Finish: ${listing.finish}
+- Condition: ${listing.condition}
+- Graded: ${listing.is_graded ? `Yes - ${listing.grading_company} ${listing.grade}` : 'No'}
+
+The original rarity was uncertain. The collector has confirmed the rarity is: ${correctedRarity}
+
+Based on this corrected rarity and the card details above, provide:
+1. A realistic eBay price range in cents (priceMinCents, priceMaxCents)
+2. Brief pricing notes explaining the range
+3. Updated eBay listing title (under 80 characters) incorporating the correct rarity
+4. Updated eBay description
+
+Listing copy rules still apply - no disclaimers, no unofficial/unlicensed language, no packaging claims beyond sleeve and top-loader for raw cards.
+
+Respond ONLY with valid JSON, no markdown fences:
+{
+  "priceMinCents": 0,
+  "priceMaxCents": 0,
+  "pricingConfidence": "high|medium|low",
+  "pricingNotes": "",
+  "ebayTitle": "",
+  "ebayDescription": ""
+}`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 800,
+      messages: [{ role: 'user', content: repricePrompt }],
+    });
+
+    const raw = response.content.map(b => b.text || '').join('');
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const repriced = JSON.parse(cleaned);
+
+    // Update the listing with corrected rarity and new pricing
+    await pool.query(
+      `UPDATE listings SET
+        rarity = $1,
+        price_min_cents = $2,
+        price_max_cents = $3,
+        pricing_notes = $4,
+        pricing_confidence = $5,
+        ebay_title = $6,
+        ebay_description = $7
+       WHERE id = $8 AND user_id = $9`,
+      [
+        correctedRarity,
+        repriced.priceMinCents,
+        repriced.priceMaxCents,
+        repriced.pricingNotes,
+        repriced.pricingConfidence,
+        repriced.ebayTitle,
+        repriced.ebayDescription,
+        id,
+        req.userId,
+      ]
+    );
+
+    res.json({
+      updated: true,
+      rarity: correctedRarity,
+      priceMinCents: repriced.priceMinCents,
+      priceMaxCents: repriced.priceMaxCents,
+      pricingNotes: repriced.pricingNotes,
+      pricingConfidence: repriced.pricingConfidence,
+      ebayTitle: repriced.ebayTitle,
+      ebayDescription: repriced.ebayDescription,
+    });
+  } catch (err) {
+    console.error('Re-price error:', err);
+    res.status(500).json({ error: 'Could not update pricing. Please try again.' });
+  }
+});
+
 // ── GET LISTING HISTORY (filterable, sortable) ──
 router.get('/history', requireAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
