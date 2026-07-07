@@ -4,6 +4,7 @@ const pool = require('../config/db');
 const { requireAuth } = require('../middleware/auth');
 const { checkUsageLimit } = require('../middleware/usageLimit');
 const { identifyCard } = require('../services/cardIdentification');
+const { uploadCardImage } = require('../services/imageStorage');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -36,38 +37,43 @@ router.post(
         }
       }
 
-      const card = await identifyCard({
-        frontBase64: front.buffer.toString('base64'),
-        frontMediaType: front.mimetype,
-        backBase64: back.buffer.toString('base64'),
-        backMediaType: back.mimetype,
-        options: {
-          condition: condition || 'Mint / Unplayed / Sleeved',
-          isGraded: isGraded === 'true',
-          seriesName,
-          seriesPricingNotes,
-        },
-      });
+      // Run image upload and card identification in parallel for speed
+      const [card, frontUrl, backUrl] = await Promise.all([
+        identifyCard({
+          frontBase64: front.buffer.toString('base64'),
+          frontMediaType: front.mimetype,
+          backBase64: back.buffer.toString('base64'),
+          backMediaType: back.mimetype,
+          options: {
+            condition: condition || 'Mint / Unplayed / Sleeved',
+            isGraded: isGraded === 'true',
+            seriesName,
+            seriesPricingNotes,
+          },
+        }),
+        uploadCardImage(front.buffer, front.mimetype, 'front', req.userId),
+        uploadCardImage(back.buffer, back.mimetype, 'back', req.userId),
+      ]);
 
-      // Save the listing
+      // Save the listing with image URLs
       const { rows: listingRows } = await pool.query(
         `INSERT INTO listings (
           user_id, series_id, character_name, series_name, card_number, set_name,
           rarity, finish, is_graded, grading_company, grade, cert_number, sub_scores,
           condition, price_min_cents, price_max_cents, pricing_notes, pricing_confidence,
-          ebay_title, ebay_description
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          ebay_title, ebay_description, front_image_url, back_image_url
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
         RETURNING id, created_at`,
         [
           req.userId, seriesId || null, card.character, card.series, card.cardNumber, card.set,
           card.rarity, card.finish, card.isGraded, card.gradingCompany, card.grade, card.certNumber,
           JSON.stringify(card.subScores || {}), card.condition, card.priceMinCents, card.priceMaxCents,
           card.pricingNotes, card.pricingConfidence, card.ebayTitle, card.ebayDescription,
+          frontUrl, backUrl,
         ]
       );
 
-      // Deduct usage — subscription allowance or credit, per what the middleware decided.
-      // Owner accounts skip this entirely.
+      // Deduct usage
       if (req.billingMethod === 'subscription') {
         await pool.query('UPDATE users SET listings_used_this_period = listings_used_this_period + 1 WHERE id = $1', [req.userId]);
       } else if (req.billingMethod === 'credit') {
@@ -77,13 +83,15 @@ router.post(
           [req.userId, listingRows[0].id]
         );
       }
-      // billingMethod === 'owner' → no deduction, no usage tracking
+      // billingMethod === 'owner' - no deduction
 
       res.status(201).json({
         listingId: listingRows[0].id,
         createdAt: listingRows[0].created_at,
         billingMethod: req.billingMethod,
         card,
+        frontUrl,
+        backUrl,
       });
     } catch (err) {
       console.error('Card processing error:', err);
@@ -98,7 +106,6 @@ router.get('/history', requireAuth, async (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   const { series, character, sort } = req.query;
 
-  // Whitelist sort options to avoid SQL injection via ORDER BY
   const sortMap = {
     newest: 'created_at DESC',
     oldest: 'created_at ASC',
@@ -140,7 +147,6 @@ router.get('/history', requireAuth, async (req, res) => {
       params
     );
 
-    // Also return the distinct series/character lists so the frontend can build filter dropdowns
     const { rows: seriesRows } = await pool.query(
       `SELECT DISTINCT series_name FROM listings WHERE user_id = $1 AND series_name IS NOT NULL ORDER BY series_name ASC`,
       [req.userId]
@@ -181,7 +187,6 @@ router.delete('/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
-    // Scoped to user_id so a user can only ever delete their own cards, never anyone else's
     const { rows } = await pool.query(
       `DELETE FROM listings WHERE id = $1 AND user_id = $2 RETURNING id`,
       [id, req.userId]
