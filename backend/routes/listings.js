@@ -37,7 +37,6 @@ router.post(
         }
       }
 
-      // Run image upload and card identification in parallel for speed
       const [card, frontUrl, backUrl] = await Promise.all([
         identifyCard({
           frontBase64: front.buffer.toString('base64'),
@@ -55,7 +54,8 @@ router.post(
         uploadCardImage(back.buffer, back.mimetype, 'back', req.userId),
       ]);
 
-      // Save the listing with image URLs
+      const rarityConfirmed = card.rarityConfirmed !== false;
+
       const { rows: listingRows } = await pool.query(
         `INSERT INTO listings (
           user_id, series_id, character_name, series_name, card_number, set_name,
@@ -73,7 +73,6 @@ router.post(
         ]
       );
 
-      // Deduct usage
       if (req.billingMethod === 'subscription') {
         await pool.query('UPDATE users SET listings_used_this_period = listings_used_this_period + 1 WHERE id = $1', [req.userId]);
       } else if (req.billingMethod === 'credit') {
@@ -83,13 +82,13 @@ router.post(
           [req.userId, listingRows[0].id]
         );
       }
-      // billingMethod === 'owner' - no deduction
 
       res.status(201).json({
         listingId: listingRows[0].id,
         createdAt: listingRows[0].created_at,
         billingMethod: req.billingMethod,
         card,
+        rarityConfirmed,
         frontUrl,
         backUrl,
       });
@@ -101,8 +100,6 @@ router.post(
 );
 
 // ── RE-PRICE A LISTING WITH CORRECTED RARITY ──
-// Called when a user corrects the rarity of a low-confidence card in My Collection.
-// Does not count against usage limits since the original scan already consumed a credit.
 router.post('/:id/reprice', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { correctedRarity } = req.body;
@@ -112,7 +109,6 @@ router.post('/:id/reprice', requireAuth, async (req, res) => {
   }
 
   try {
-    // Fetch the existing listing to get all context needed for re-pricing
     const { rows } = await pool.query(
       `SELECT * FROM listings WHERE id = $1 AND user_id = $2`,
       [id, req.userId]
@@ -124,7 +120,6 @@ router.post('/:id/reprice', requireAuth, async (req, res) => {
 
     const listing = rows[0];
 
-    // Build a targeted re-price prompt using the corrected rarity
     const Anthropic = require('@anthropic-ai/sdk');
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -135,22 +130,21 @@ Card details:
 - Series: ${listing.series_name}
 - Set: ${listing.set_name}
 - Card Number: ${listing.card_number}
-- Corrected Rarity: ${correctedRarity}
+- Confirmed Rarity: ${correctedRarity}
 - Finish: ${listing.finish}
 - Condition: ${listing.condition}
 - Graded: ${listing.is_graded ? `Yes - ${listing.grading_company} ${listing.grade}` : 'No'}
 
-The original rarity was uncertain. The collector has confirmed the rarity is: ${correctedRarity}
+The collector has confirmed the rarity is: ${correctedRarity}
 
-Based on this corrected rarity and the card details above, provide:
-1. A realistic eBay price range in cents (priceMinCents, priceMaxCents)
-2. Brief pricing notes explaining the range
-3. Updated eBay listing title (under 80 characters) incorporating the correct rarity
-4. Updated eBay description
+Provide updated pricing and listing content based on this confirmed rarity.
 
-Listing copy rules still apply - no disclaimers, no unofficial/unlicensed language, no packaging claims beyond sleeve and top-loader for raw cards.
+Rules:
+- No disclaimers, no unofficial/unlicensed language
+- No packaging claims beyond sleeve and top-loader for raw cards
+- Listing copy must be positive and factual
 
-Respond ONLY with valid JSON, no markdown fences:
+Respond ONLY with valid JSON, no markdown:
 {
   "priceMinCents": 0,
   "priceMaxCents": 0,
@@ -170,7 +164,6 @@ Respond ONLY with valid JSON, no markdown fences:
     const cleaned = raw.replace(/```json|```/g, '').trim();
     const repriced = JSON.parse(cleaned);
 
-    // Update the listing with corrected rarity and new pricing
     await pool.query(
       `UPDATE listings SET
         rarity = $1,
@@ -186,7 +179,7 @@ Respond ONLY with valid JSON, no markdown fences:
         repriced.priceMinCents,
         repriced.priceMaxCents,
         repriced.pricingNotes,
-        repriced.pricingConfidence,
+        'confirmed',
         repriced.ebayTitle,
         repriced.ebayDescription,
         id,
@@ -200,7 +193,7 @@ Respond ONLY with valid JSON, no markdown fences:
       priceMinCents: repriced.priceMinCents,
       priceMaxCents: repriced.priceMaxCents,
       pricingNotes: repriced.pricingNotes,
-      pricingConfidence: repriced.pricingConfidence,
+      pricingConfidence: 'confirmed',
       ebayTitle: repriced.ebayTitle,
       ebayDescription: repriced.ebayDescription,
     });
@@ -210,7 +203,7 @@ Respond ONLY with valid JSON, no markdown fences:
   }
 });
 
-// ── GET LISTING HISTORY (filterable, sortable) ──
+// ── GET LISTING HISTORY ──
 router.get('/history', requireAuth, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
   const offset = parseInt(req.query.offset) || 0;
