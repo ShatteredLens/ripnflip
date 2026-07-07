@@ -10,6 +10,14 @@ function buildPrompt({ condition, isGraded, seriesName, seriesPricingNotes }) {
 Series context: ${seriesName || 'Unknown — identify from the card itself'}
 ${seriesPricingNotes ? `Pricing guidance for this series: ${seriesPricingNotes}` : ''}
 
+Reference knowledge sources for waifu/anime card identification accuracy:
+- waifu360.com -- English-language set lists, card galleries, rarity tier explanations, manufacturer names, cards per box, and Goddess Story beginner context. Use this as your primary reference for set metadata, rarity codes, and terminology.
+- waifupedia.com -- Structured card database with card numbers, character names, series, rarity, and set codes. Use for verifying card number formats and character-to-series mapping.
+- waifucards.app -- High-quality card image database. Use as a reference for identifying cards when the uploaded image is unclear.
+- waifucards.info -- Community-maintained index of setlists in spreadsheet format. Use for cross-referencing set codes and card counts.
+
+When identifying a card, use your knowledge of these sources to cross-reference set codes, rarity tiers, and character names for maximum accuracy. If the card number visible on the back matches a known set prefix (e.g. NS-10M05, NS-5M09), use that to anchor the set identification.
+
 Your job:
 1. Identify the card fully: character name, the source anime/game/IP, card number (read from the back), set name, rarity code, and finish (holo/foil/standard).
 2. If the card is in a graded slab, extract: grading company name, grade score, certificate number, and every visible sub-score (centering, surface, corners, edges).
