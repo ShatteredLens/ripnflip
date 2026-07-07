@@ -54,6 +54,7 @@ router.post(
         uploadCardImage(back.buffer, back.mimetype, 'back', req.userId),
       ]);
 
+      // rarityConfirmed defaults to true if AI doesn't explicitly say false
       const rarityConfirmed = card.rarityConfirmed !== false;
 
       const { rows: listingRows } = await pool.query(
@@ -61,15 +62,15 @@ router.post(
           user_id, series_id, character_name, series_name, card_number, set_name,
           rarity, finish, is_graded, grading_company, grade, cert_number, sub_scores,
           condition, price_min_cents, price_max_cents, pricing_notes, pricing_confidence,
-          ebay_title, ebay_description, front_image_url, back_image_url
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+          ebay_title, ebay_description, front_image_url, back_image_url, rarity_confirmed
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
         RETURNING id, created_at`,
         [
           req.userId, seriesId || null, card.character, card.series, card.cardNumber, card.set,
           card.rarity, card.finish, card.isGraded, card.gradingCompany, card.grade, card.certNumber,
           JSON.stringify(card.subScores || {}), card.condition, card.priceMinCents, card.priceMaxCents,
           card.pricingNotes, card.pricingConfidence, card.ebayTitle, card.ebayDescription,
-          frontUrl, backUrl,
+          frontUrl, backUrl, rarityConfirmed,
         ]
       );
 
@@ -172,7 +173,8 @@ Respond ONLY with valid JSON, no markdown:
         pricing_notes = $4,
         pricing_confidence = $5,
         ebay_title = $6,
-        ebay_description = $7
+        ebay_description = $7,
+        rarity_confirmed = TRUE
        WHERE id = $8 AND user_id = $9`,
       [
         correctedRarity,
@@ -242,7 +244,8 @@ router.get('/history', requireAuth, async (req, res) => {
       `SELECT id, character_name, series_name, card_number, set_name, rarity, finish,
               is_graded, grading_company, grade, cert_number, sub_scores, condition,
               price_min_cents, price_max_cents, pricing_notes, pricing_confidence,
-              ebay_title, ebay_description, front_image_url, back_image_url, created_at
+              ebay_title, ebay_description, front_image_url, back_image_url,
+              rarity_confirmed, created_at
        FROM listings
        WHERE ${conditions.join(' AND ')}
        ORDER BY ${orderBy}
