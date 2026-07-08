@@ -54,7 +54,6 @@ router.post(
         uploadCardImage(back.buffer, back.mimetype, 'back', req.userId),
       ]);
 
-      // rarityConfirmed defaults to true if AI doesn't explicitly say false
       const rarityConfirmed = card.rarityConfirmed !== false;
 
       const { rows: listingRows } = await pool.query(
@@ -245,7 +244,7 @@ router.get('/history', requireAuth, async (req, res) => {
               is_graded, grading_company, grade, cert_number, sub_scores, condition,
               price_min_cents, price_max_cents, pricing_notes, pricing_confidence,
               ebay_title, ebay_description, front_image_url, back_image_url,
-              rarity_confirmed, created_at
+              rarity_confirmed, listed_on_ebay, created_at
        FROM listings
        WHERE ${conditions.join(' AND ')}
        ORDER BY ${orderBy}
@@ -285,6 +284,32 @@ router.get('/usage', requireAuth, async (req, res) => {
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Could not load usage info.' });
+  }
+});
+
+// ── TOGGLE EBAY LISTED STATUS ──
+router.patch('/:id/listed', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { listed } = req.body;
+
+  if (typeof listed !== 'boolean') {
+    return res.status(400).json({ error: 'listed must be true or false.' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE listings SET listed_on_ebay = $1 WHERE id = $2 AND user_id = $3 RETURNING id, listed_on_ebay`,
+      [listed, id, req.userId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Card not found in your collection.' });
+    }
+
+    res.json({ updated: true, id: rows[0].id, listed_on_ebay: rows[0].listed_on_ebay });
+  } catch (err) {
+    console.error('Toggle listed error:', err);
+    res.status(500).json({ error: 'Could not update listing status.' });
   }
 });
 
